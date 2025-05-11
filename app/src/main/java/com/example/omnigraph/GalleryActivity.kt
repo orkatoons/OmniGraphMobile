@@ -1,161 +1,335 @@
 package com.example.omnigraph
 
-import android.Manifest
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.media.MediaPlayer
-import android.net.Uri
 import android.os.Bundle
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import android.widget.ImageButton
-import android.widget.ImageView
-import android.widget.TextView
-import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
-import androidx.recyclerview.widget.GridLayoutManager
-import androidx.recyclerview.widget.RecyclerView
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.OnBackPressedCallback
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.unit.dp
+import android.graphics.BitmapFactory
 import java.io.File
+import com.example.omnigraph.ui.theme.OmnigraphTheme
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.PlayerView
+import android.view.ViewGroup
+import android.widget.FrameLayout
+import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import com.example.omnigraph.ui.theme.LocalDarkMode
 
-class GalleryActivity : AppCompatActivity() {
-    private lateinit var recyclerView: RecyclerView
-    private lateinit var emptyView: TextView
-    private var mediaPlayer: MediaPlayer? = null
-    private val STORAGE_PERMISSION_CODE = 100
-
+class GalleryActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_gallery)
-
-        recyclerView = findViewById(R.id.galleryRecyclerView)
-        emptyView = findViewById(R.id.emptyView)
-
-        recyclerView.layoutManager = GridLayoutManager(this, 2)
-        
-        if (checkStoragePermission()) {
-            loadMediaFiles()
-        } else {
-            requestStoragePermission()
-        }
-    }
-
-    private fun checkStoragePermission(): Boolean {
-        return ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.READ_EXTERNAL_STORAGE
-        ) == PackageManager.PERMISSION_GRANTED
-    }
-
-    private fun requestStoragePermission() {
-        ActivityCompat.requestPermissions(
-            this,
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE),
-            STORAGE_PERMISSION_CODE
-        )
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == STORAGE_PERMISSION_CODE) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                loadMediaFiles()
-            } else {
-                Toast.makeText(this, "Storage permission required to view media files", Toast.LENGTH_LONG).show()
+        setContent {
+            var isDarkMode by remember { mutableStateOf(true) } // Set dark mode as default
+            
+            CompositionLocalProvider(LocalDarkMode provides isDarkMode) {
+                OmnigraphTheme {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+                        GalleryScreen(
+                            onBackClick = { finish() }
+                        )
+                    }
+                }
             }
         }
     }
+}
 
-    private fun loadMediaFiles() {
-        val mediaDir = File(getExternalFilesDir(null), "OmniGraph")
-        if (!mediaDir.exists()) {
-            mediaDir.mkdirs()
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun GalleryScreen(
+    onBackClick: () -> Unit
+) {
+    val context = LocalContext.current
+    val activity = context as? ComponentActivity
+    val outputDir = File(context.getExternalFilesDir(null), "OmnigraphOutput")
+    val mediaFiles = remember {
+        mutableStateListOf<File>().apply {
+            if (outputDir.exists()) {
+                addAll(outputDir.listFiles()?.filter { 
+                    it.name.endsWith(".png") || it.name.endsWith(".wav") 
+                } ?: emptyList())
+            }
         }
+    }
+    var selectedMedia by remember { mutableStateOf<File?>(null) }
 
-        val mediaFiles = mediaDir.listFiles()?.filter { file ->
-            file.name.endsWith(".mp3") || file.name.endsWith(".jpg") || file.name.endsWith(".png")
-        }?.sortedByDescending { it.lastModified() } ?: emptyList()
+    // Handle back press
+    DisposableEffect(activity) {
+        val callback = object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (selectedMedia != null) {
+                    selectedMedia = null
+                } else {
+                    onBackClick()
+                }
+            }
+        }
+        activity?.onBackPressedDispatcher?.addCallback(callback)
+        onDispose {
+            callback.remove()
+        }
+    }
 
-        if (mediaFiles.isEmpty()) {
-            recyclerView.visibility = View.GONE
-            emptyView.visibility = View.VISIBLE
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Saved Media") },
+                navigationIcon = {
+                    IconButton(onClick = onBackClick) {
+                        Icon(
+                            imageVector = Icons.Default.Home,
+                            contentDescription = "Back to Home"
+                        )
+                    }
+                }
+            )
+        }
+    ) { paddingValues ->
+        if (selectedMedia != null) {
+            MediaViewer(
+                file = selectedMedia!!,
+                onBackClick = { selectedMedia = null }
+            )
+        } else if (mediaFiles.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("No saved media found")
+            }
         } else {
-            recyclerView.visibility = View.VISIBLE
-            emptyView.visibility = View.GONE
-            recyclerView.adapter = MediaAdapter(mediaFiles) { file ->
-                when {
-                    file.name.endsWith(".mp3") -> playAudio(file)
-                    file.name.endsWith(".jpg") || file.name.endsWith(".png") -> openImage(file)
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(2),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .padding(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(mediaFiles) { file ->
+                    MediaItem(
+                        file = file,
+                        onMediaClick = { selectedMedia = file }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun MediaItem(
+    file: File,
+    onMediaClick: () -> Unit
+) {
+    var showDeleteDialog by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .clickable { onMediaClick() }
+    ) {
+        if (file.name.endsWith(".png")) {
+            val bitmap = BitmapFactory.decodeFile(file.absolutePath)
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = "Saved image",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            }
+        } else {
+            // For audio files, show a placeholder with play icon
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = "Play audio",
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Text("Audio: ${file.name}")
                 }
             }
         }
     }
 
-    private fun playAudio(file: File) {
-        mediaPlayer?.release()
-        mediaPlayer = MediaPlayer().apply {
-            setDataSource(file.absolutePath)
-            prepare()
-            start()
-        }
-    }
-
-    private fun openImage(file: File) {
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(Uri.fromFile(file), "image/*")
-            flags = Intent.FLAG_GRANT_READ_URI_PERMISSION
-        }
-        startActivity(intent)
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        mediaPlayer?.release()
-        mediaPlayer = null
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("Delete Media") },
+            text = { Text("Are you sure you want to delete this file?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        file.delete()
+                        showDeleteDialog = false
+                    }
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }
 
-class MediaAdapter(
-    private val mediaFiles: List<File>,
-    private val onItemClick: (File) -> Unit
-) : RecyclerView.Adapter<MediaAdapter.MediaViewHolder>() {
-
-    class MediaViewHolder(view: View) : RecyclerView.ViewHolder(view) {
-        val thumbnail: ImageView = view.findViewById(R.id.mediaThumbnail)
-        val name: TextView = view.findViewById(R.id.mediaName)
-        val playButton: ImageButton = view.findViewById(R.id.playButton)
-    }
-
-    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): MediaViewHolder {
-        val view = LayoutInflater.from(parent.context)
-            .inflate(R.layout.item_media, parent, false)
-        return MediaViewHolder(view)
-    }
-
-    override fun onBindViewHolder(holder: MediaViewHolder, position: Int) {
-        val file = mediaFiles[position]
-        holder.name.text = file.name
-
-        when {
-            file.name.endsWith(".mp3") -> {
-                holder.thumbnail.setImageResource(android.R.drawable.ic_media_play)
-                holder.playButton.visibility = View.VISIBLE
-            }
-            file.name.endsWith(".jpg") || file.name.endsWith(".png") -> {
-                holder.thumbnail.setImageURI(Uri.fromFile(file))
-                holder.playButton.visibility = View.GONE
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MediaViewer(
+    file: File,
+    onBackClick: () -> Unit
+) {
+    val context = LocalContext.current
+    var isPlaying by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0f) }
+    
+    val exoPlayer = remember {
+        ExoPlayer.Builder(context).build().apply {
+            if (file.name.endsWith(".wav")) {
+                setMediaItem(MediaItem.fromUri(file.toURI().toString()))
+                prepare()
             }
         }
-
-        holder.itemView.setOnClickListener { onItemClick(file) }
-        holder.playButton.setOnClickListener { onItemClick(file) }
+    }
+    
+    DisposableEffect(Unit) {
+        onDispose {
+            exoPlayer.release()
+        }
     }
 
-    override fun getItemCount() = mediaFiles.size
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(file.name) },
+                navigationIcon = {
+                    TextButton(
+                        onClick = onBackClick,
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.onSurface
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back to Gallery"
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Back to Gallery")
+                    }
+                }
+            )
+        }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+        ) {
+            if (file.name.endsWith(".png")) {
+                // Image viewer
+                val bitmap = BitmapFactory.decodeFile(file.absolutePath)
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "Saved image",
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+            } else {
+                // Audio player
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (isPlaying) "Pause" else "Play",
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clickable {
+                                    if (isPlaying) {
+                                        exoPlayer.pause()
+                                    } else {
+                                        exoPlayer.play()
+                                    }
+                                    isPlaying = !isPlaying
+                                }
+                        )
+                        
+                        Slider(
+                            value = progress,
+                            onValueChange = { newValue ->
+                                progress = newValue
+                                exoPlayer.seekTo((newValue * exoPlayer.duration).toLong())
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+    
+    // Update progress for audio playback
+    LaunchedEffect(isPlaying) {
+        while (isPlaying) {
+            delay(100)
+            progress = (exoPlayer.currentPosition.toFloat() / exoPlayer.duration.toFloat())
+                .coerceIn(0f, 1f)
+        }
+    }
 } 
