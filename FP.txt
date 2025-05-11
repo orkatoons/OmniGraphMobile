@@ -1,0 +1,71 @@
+Encoding and Decoding Audio in an Image
+Understanding the Encoding Process
+Omnigraph Codex converts audio into an image by mapping sound wave data to pixel values and vice-versa. Each encoding method organizes the data differently, affecting how the image is structured and how the audio is reconstructed.
+Shared Principles Across All Methods
+Audio Data to Pixels
+1.Audio samples (binary data) is converted into pixel intensity values ranging from 0 to 255.
+2.Each pixel has three color channels (Red, Green, Blue), which store parts of the audio data.
+Image as a Sound Container
+1.The dimensions of the image determine how much audio it can store.
+2.Higher resolutions allow for longer audio storage.
+3.Different encoding methods distribute audio differently across the image.
+Decoding Audio from an Image
+1.The process reverses the encoding law by extracting audio from pixel values.
+2.Decoding a non-encoded image generates arbitrary wave-forms, often resulting in noise or distortion. However, this unpredictability can be explored for experimental audio sampling, glitch aesthetics, and creative sound design.
+
+Encoding Methods
+Each method determines how the audio is mapped onto the Red, Green, and Blue channels of the image.
+Method A – Channel Multiplexing
+Stores audio sequentially in separate color channels (Red → Green → Blue).
+Best for: Creating distinct channel-based audio patterns.
+Steps:
+1.Start encoding at the top-left corner of the image.
+2.Store the first portion of the audio in the Red channel, filling row by row.
+3.Once the Red channel is full, move to the Green channel and continue encoding.
+4.After Green is full, store the remaining audio in the Blue channel.
+5.The final image holds each portion of the audio in different color layers.
+Method B – Pixel Interleaving
+Distributes audio evenly across all three color channels per pixel.
+Best for: Balanced encoding where all channels contribute equally.
+Steps:
+1.Start encoding at the top-left corner of the image.
+2.Take three consecutive audio samples and store them in a single pixel’s Red, Green, and Blue channels.
+3.Move to the next pixel and repeat the process, encoding one pixel at a time.
+4.This method ensures that all channels contain different portions of the audio evenly.
+Method C – Spectral Encoding
+Uses frequency-based separation to assign audio to different color channels.
+Best for: Frequency analysis and transforming audio into spectral images.
+Steps:
+1.Analyze the audio frequencies and separate them into low, mid, and high frequencies.
+2.Assign low frequencies to the Red channel, mid frequencies to the Green channel, and high frequencies to the Blue channel.
+3.Each color channel now represents a different part of the frequency spectrum of the sound.
+4.This method creates visual spectral data that aligns with the audio’s frequency composition.
+
+Decoding the Audio from an Image
+Extract the stored values from the image’s color channels.
+oMethod A: Read Red first, then Green, then Blue.
+oMethod B: Read all three channels together per pixel.
+oMethod C: Reconstruct frequencies from the Red (low), Green (mid), and Blue (high) channels.
+Reconstruct the original waveform.
+oConvert pixel intensity values back into audio samples.
+oEnsure correct sequencing to maintain sound integrity.
+
+
+
+Considerations
+Image Dimensions & Storage Capacity
+The resolution determines how much audio can be stored.
+Example:
+o1920×1080 image = 2,073,600 pixels.
+oWith 3 channels per pixel, it can store 6,220,800 audio samples.
+oAt 44.1 kHz (CD-quality audio), this equals approximately 2 minutes, 21 seconds of audio.
+Audio Quality
+Higher bit-depth (e.g., 16-bit or 24-bit) requires multiple pixels per sample.
+Lossy compression (JPEG) may corrupt the data, so use PNG to preserve quality.
+Applications
+Steganography: Hide audio within images for covert communication.
+Audio-Visual Art: Generate glitch visuals that also function as sound data.
+Data Storage Experimentation: Explore new ways to store and retrieve audio through images.
+
+Conclusion
+Omnigraph Codex presents a unique audio-visual bridge, allowing sound to be stored, visualized, and reconstructed in different ways. With three encoding methods, users can choose how the audio-to-image transformation is structured—whether through separate channels, pixel-wise interleaving, or spectral frequency mapping. This opens up exciting applications in experimental sound design, encryption, and creative media.
