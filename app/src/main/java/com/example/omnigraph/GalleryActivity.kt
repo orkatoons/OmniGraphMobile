@@ -36,6 +36,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.example.omnigraph.ui.theme.LocalDarkMode
+import android.content.Intent
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 
 class GalleryActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -151,11 +154,19 @@ fun MediaItem(
     onMediaClick: () -> Unit
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var showShareDialog by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     Box(
         modifier = Modifier
             .aspectRatio(1f)
-            .clickable { onMediaClick() }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = { onMediaClick() },
+                    onLongPress = { showShareDialog = true }
+                )
+            }
     ) {
         if (file.name.endsWith(".png")) {
             val bitmap = BitmapFactory.decodeFile(file.absolutePath)
@@ -212,6 +223,95 @@ fun MediaItem(
             }
         )
     }
+
+    if (showRenameDialog) {
+        var newName by remember { mutableStateOf(file.nameWithoutExtension) }
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("Rename File") },
+            text = {
+                Column {
+                    Text("Enter new name for the file:")
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (newName.isNotBlank()) {
+                            val extension = file.extension
+                            val newFile = File(file.parent, "$newName.$extension")
+                            file.renameTo(newFile)
+                        }
+                        showRenameDialog = false
+                    }
+                ) {
+                    Text("Rename")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showShareDialog) {
+        AlertDialog(
+            onDismissRequest = { showShareDialog = false },
+            title = { Text("Share Options") },
+            text = {
+                Column {
+                    TextButton(
+                        onClick = {
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                context,
+                                "${context.packageName}.fileprovider",
+                                file
+                            )
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = if (file.name.endsWith(".png")) "image/png" else "audio/wav"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Share via"))
+                            showShareDialog = false
+                        }
+                    ) {
+                        Text("Share File")
+                    }
+                    TextButton(
+                        onClick = {
+                            showRenameDialog = true
+                            showShareDialog = false
+                        }
+                    ) {
+                        Text("Rename File")
+                    }
+                    TextButton(
+                        onClick = {
+                            showDeleteDialog = true
+                            showShareDialog = false
+                        }
+                    ) {
+                        Text("Delete File")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showShareDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -223,6 +323,9 @@ fun MediaViewer(
     val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf(0f) }
+    var showShareDialog by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var newName by remember { mutableStateOf(file.nameWithoutExtension) }
     
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
@@ -256,6 +359,14 @@ fun MediaViewer(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text("Back to Gallery")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showShareDialog = true }) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = "Share"
+                        )
                     }
                 }
             )
@@ -322,6 +433,86 @@ fun MediaViewer(
                 }
             }
         }
+    }
+    
+    if (showShareDialog) {
+        AlertDialog(
+            onDismissRequest = { showShareDialog = false },
+            title = { Text("Share Options") },
+            text = {
+                Column {
+                    TextButton(
+                        onClick = {
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                context,
+                                "${context.packageName}.fileprovider",
+                                file
+                            )
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = if (file.name.endsWith(".png")) "image/png" else "audio/wav"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Share via"))
+                            showShareDialog = false
+                        }
+                    ) {
+                        Text("Share File")
+                    }
+                    TextButton(
+                        onClick = {
+                            showRenameDialog = true
+                            showShareDialog = false
+                        }
+                    ) {
+                        Text("Rename File")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showShareDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showRenameDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("Rename File") },
+            text = {
+                Column {
+                    Text("Enter new name for the file:")
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (newName.isNotBlank()) {
+                            val extension = file.extension
+                            val newFile = File(file.parent, "$newName.$extension")
+                            file.renameTo(newFile)
+                        }
+                        showRenameDialog = false
+                    }
+                ) {
+                    Text("Rename")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
     
     // Update progress for audio playback

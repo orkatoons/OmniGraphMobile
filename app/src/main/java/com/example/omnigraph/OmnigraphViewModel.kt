@@ -17,6 +17,10 @@ import android.util.Log
 import android.webkit.MimeTypeMap
 import java.io.IOException
 import kotlinx.coroutines.delay
+import android.media.MediaPlayer
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import java.io.ByteArrayOutputStream
 
 data class OmnigraphState(
     val isDarkMode: Boolean = false,
@@ -26,7 +30,11 @@ data class OmnigraphState(
     val isPlaying: Boolean = false,
     val progress: Float = 0f,
     val error: String? = null,
-    val sourceType: SourceType = SourceType.NONE
+    val sourceType: SourceType = SourceType.NONE,
+    val imageData: ByteArray? = null,
+    val audioData: ByteArray? = null,
+    val isLoading: Boolean = false,
+    val playbackPosition: Float = 0f
 )
 
 enum class SourceType {
@@ -37,118 +45,180 @@ enum class SourceType {
 
 class OmnigraphViewModel : ViewModel() {
     private var audioProcessor: AudioProcessor? = null
+    private var mediaPlayer: MediaPlayer? = null
+    private var currentAudioData: ByteArray? = null
+    private var isPlaying = false
+    private var currentPosition = 0
+    private var audioDuration = 0
+    private var context: Context? = null
+
     private val _state = MutableStateFlow(OmnigraphState())
     val state: StateFlow<OmnigraphState> = _state.asStateFlow()
-    
-    init {
-        // Start progress updates when playing
+
+    fun initialize(context: Context) {
+        this.context = context
+        audioProcessor = AudioProcessor(context)
+    }
+
+    fun encodeAudioToImage(audioUri: Uri) {
         viewModelScope.launch {
-            while (true) {
-                if (_state.value.isPlaying) {
-                    val progress = audioProcessor?.getCurrentProgress() ?: 0f
-                    _state.value = _state.value.copy(progress = progress)
+            try {
+                _state.value = _state.value.copy(isLoading = true)
+                
+                // Read audio file
+                val audioBytes = context?.contentResolver?.openInputStream(audioUri)?.use { inputStream -> 
+                    inputStream.readBytes() 
+                } ?: throw IOException("Failed to read audio file")
+
+                // Store the audio data
+                currentAudioData = audioBytes
+                _state.value = _state.value.copy(
+                    currentAudio = audioBytes,
+                    sourceType = SourceType.AUDIO
+                )
+
+                // Encode audio to image
+                val imageBytes = audioProcessor?.encodeAudioToImage(audioBytes)
+                if (imageBytes != null) {
+                    _state.value = _state.value.copy(
+                        currentImage = imageBytes,
+                        imageData = imageBytes,
+                        isLoading = false
+                    )
+                } else {
+                    throw IOException("Failed to encode audio to image")
                 }
-                delay(100) // Update every 100ms
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    error = e.message ?: "Unknown error occurred",
+                    isLoading = false
+                )
             }
         }
     }
-    
-    fun initialize(context: Context) {
-        audioProcessor = AudioProcessor(context)
+
+    fun decodeImageToAudio(imageUri: Uri) {
+        viewModelScope.launch {
+            try {
+                _state.value = _state.value.copy(isLoading = true)
+                
+                // Read image file
+                val imageBytes = context?.contentResolver?.openInputStream(imageUri)?.use { inputStream -> 
+                    inputStream.readBytes()
+                } ?: throw IOException("Failed to read image file")
+
+                // Store the image data
+                _state.value = _state.value.copy(
+                    currentImage = imageBytes,
+                    sourceType = SourceType.IMAGE
+                )
+
+                // Decode image to audio
+                val audioData = audioProcessor?.decodeImageToAudio(imageBytes)
+                if (audioData != null) {
+                    // Save decoded audio for playback
+                    currentAudioData = audioData
+                    
+                    _state.value = _state.value.copy(
+                        currentAudio = audioData,
+                        audioData = audioData,
+                        isLoading = false
+                    )
+                } else {
+                    throw IOException("Failed to decode image to audio")
+                }
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    error = e.message ?: "Unknown error occurred",
+                    isLoading = false
+                )
+            }
+        }
     }
-    
+
+    fun togglePlayback() {
+        if (currentAudioData == null) return
+
+        if (isPlaying) {
+            stopPlayback()
+        } else {
+            startPlayback()
+        }
+    }
+
+    private fun startPlayback() {
+        try {
+            // Create temporary WAV file
+            val tempFile = File.createTempFile("temp_audio", ".wav", context?.cacheDir)
+            audioProcessor?.saveAudioToFile(currentAudioData!!, tempFile)
+
+            // Initialize MediaPlayer
+            mediaPlayer = MediaPlayer().apply {
+                setDataSource(tempFile.absolutePath)
+                prepare()
+                start()
+                this@OmnigraphViewModel.isPlaying = true
+                audioDuration = duration
+                
+                // Set up completion listener
+                setOnCompletionListener {
+                    stopPlayback()
+                }
+            }
+
+            // Start position updates
+            startPositionUpdates()
+        } catch (e: Exception) {
+            _state.value = _state.value.copy(
+                error = "Failed to start playback: ${e.message}"
+            )
+        }
+    }
+
+    private fun stopPlayback() {
+        mediaPlayer?.apply {
+            if (isPlaying) {
+                stop()
+            }
+            release()
+        }
+        mediaPlayer = null
+        isPlaying = false
+        currentPosition = 0
+        _state.value = _state.value.copy(
+            playbackPosition = 0f
+        )
+    }
+
+    private fun startPositionUpdates() {
+        viewModelScope.launch {
+            while (isPlaying && mediaPlayer != null) {
+                delay(100)
+                currentPosition = mediaPlayer?.currentPosition ?: 0
+                _state.value = _state.value.copy(
+                    playbackPosition = currentPosition.toFloat() / audioDuration.toFloat()
+                )
+            }
+        }
+    }
+
+    fun seekTo(position: Float) {
+        if (mediaPlayer != null) {
+            val newPosition = (position * audioDuration).toInt()
+            mediaPlayer?.seekTo(newPosition)
+            currentPosition = newPosition
+            _state.value = _state.value.copy(
+                playbackPosition = position
+            )
+        }
+    }
+
     fun toggleDarkMode() {
         _state.value = _state.value.copy(isDarkMode = !_state.value.isDarkMode)
     }
     
     fun setEncodingMethod(method: String) {
         _state.value = _state.value.copy(encodingMethod = method)
-    }
-    
-    fun processAudioFile(uri: Uri, context: Context) {
-        viewModelScope.launch {
-            try {
-                val inputStream = context.contentResolver.openInputStream(uri)
-                val audioData = inputStream?.readBytes()
-                inputStream?.close()
-
-                if (audioData == null || audioData.isEmpty()) {
-                    _state.value = _state.value.copy(error = "Failed to read audio file")
-                    return@launch
-                }
-
-                val imageData = audioProcessor?.encodeAudioToImage(audioData, _state.value.encodingMethod)
-                    ?: throw IllegalStateException("AudioProcessor not initialized")
-
-                _state.value = _state.value.copy(
-                    currentImage = imageData,
-                    currentAudio = audioData,
-                    error = null,
-                    sourceType = SourceType.AUDIO
-                )
-                
-                // Start playing the audio
-                audioProcessor?.playAudio(audioData)
-                _state.value = _state.value.copy(isPlaying = true)
-            } catch (e: Exception) {
-                Log.e("OmnigraphViewModel", "Error processing audio file", e)
-                _state.value = _state.value.copy(error = "Error processing audio: ${e.message}")
-            }
-        }
-    }
-    
-    fun processImageFile(uri: Uri, context: Context) {
-        viewModelScope.launch {
-            try {
-                val inputStream = context.contentResolver.openInputStream(uri)
-                val imageData = inputStream?.readBytes()
-                inputStream?.close()
-
-                if (imageData == null || imageData.isEmpty()) {
-                    _state.value = _state.value.copy(error = "Failed to read image file")
-                    return@launch
-                }
-
-                val audioData = audioProcessor?.decodeImageToAudio(imageData, _state.value.encodingMethod)
-                    ?: throw IllegalStateException("AudioProcessor not initialized")
-
-                _state.value = _state.value.copy(
-                    currentImage = imageData,
-                    currentAudio = audioData,
-                    error = null,
-                    sourceType = SourceType.IMAGE
-                )
-                
-                // Start playing the decoded audio
-                audioProcessor?.playAudio(audioData)
-                _state.value = _state.value.copy(isPlaying = true)
-            } catch (e: Exception) {
-                Log.e("OmnigraphViewModel", "Error processing image file", e)
-                _state.value = _state.value.copy(error = "Error processing image: ${e.message}")
-            }
-        }
-    }
-    
-    fun togglePlayback() {
-        if (_state.value.isPlaying) {
-            pausePlayback()
-        } else {
-            resumePlayback()
-        }
-    }
-    
-    fun pausePlayback() {
-        audioProcessor?.pausePlayback()
-        _state.value = _state.value.copy(isPlaying = false)
-    }
-    
-    fun resumePlayback() {
-        audioProcessor?.resumePlayback()
-        _state.value = _state.value.copy(isPlaying = true)
-    }
-    
-    fun seekTo(position: Float) {
-        audioProcessor?.seekTo(position)
     }
     
     fun getCurrentProgress(): Float {
@@ -168,7 +238,7 @@ class OmnigraphViewModel : ViewModel() {
                     SourceType.AUDIO -> {
                         // Save the generated image
                         val outputFile = File(outputDir, "encoded_image_$timestamp.png")
-                        _state.value.currentImage?.let { imageData ->
+                        _state.value.imageData?.let { imageData ->
                             outputFile.writeBytes(imageData)
                             _state.value = _state.value.copy(error = "Image saved to: ${outputFile.absolutePath}")
                         } ?: run {
@@ -178,7 +248,7 @@ class OmnigraphViewModel : ViewModel() {
                     SourceType.IMAGE -> {
                         // Save the generated audio
                         val outputFile = File(outputDir, "decoded_audio_$timestamp.wav")
-                        _state.value.currentAudio?.let { audioData ->
+                        _state.value.audioData?.let { audioData ->
                             outputFile.writeBytes(audioData)
                             _state.value = _state.value.copy(error = "Audio saved to: ${outputFile.absolutePath}")
                         } ?: run {
@@ -198,6 +268,7 @@ class OmnigraphViewModel : ViewModel() {
     
     override fun onCleared() {
         super.onCleared()
+        stopPlayback()
         audioProcessor?.release()
     }
 } 

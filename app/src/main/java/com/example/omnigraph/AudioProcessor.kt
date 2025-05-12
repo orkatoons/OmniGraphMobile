@@ -31,131 +31,159 @@ class AudioProcessor(private val context: Context) {
         private const val SAMPLE_RATE = 44100
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+        private const val CHANNELS = 1
+        private const val BITS_PER_SAMPLE = 16
     }
 
-    suspend fun encodeAudioToImage(audioData: ByteArray, method: String): ByteArray = withContext(Dispatchers.Default) {
+    suspend fun encodeAudioToImage(audioData: ByteArray): ByteArray? {
         try {
-            Log.d("AudioProcessor", "Starting audio encoding with method: $method")
-            Log.d("AudioProcessor", "Input audio data size: ${audioData.size} bytes")
-
-            if (audioData.isEmpty()) {
-                throw IllegalArgumentException("Input audio data is empty")
-            }
-
-            // Convert byte array to short array manually
-            val audioShorts = ShortArray(audioData.size / 2)
-            for (i in audioShorts.indices) {
-                val byteIndex = i * 2
-                audioShorts[i] = (audioData[byteIndex].toInt() and 0xFF or 
-                                (audioData[byteIndex + 1].toInt() and 0xFF shl 8)).toShort()
-            }
-            
-            Log.d("AudioProcessor", "Converted to shorts array, size: ${audioShorts.size}")
-
-            val audio8Bit = audioShorts.map { ((it.toFloat() + 32768) / 65535 * 255).toInt().toByte() }.toByteArray()
-            Log.d("AudioProcessor", "Converted to 8-bit audio, size: ${audio8Bit.size}")
-
-            val rgbArray = when (method) {
-                "A" -> {
-                    Log.d("AudioProcessor", "Using encoding method A")
-                    encodeMethodA(audio8Bit)
+            // Convert audio data to 16-bit samples
+            val samples = ByteBuffer.wrap(audioData)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .asShortBuffer()
+                .let { buffer ->
+                    ShortArray(buffer.remaining()) { buffer.get() }
                 }
-                "B" -> {
-                    Log.d("AudioProcessor", "Using encoding method B")
-                    encodeMethodB(audio8Bit)
-                }
-                "C" -> {
-                    Log.d("AudioProcessor", "Using encoding method C")
-                    encodeMethodC(audioShorts)
-                }
-                else -> throw IllegalArgumentException("Invalid encoding method: $method")
-            }
-            
-            Log.d("AudioProcessor", "Generated RGB array, size: ${rgbArray.size}")
 
-            // Convert RGB array to Bitmap
-            val width = sqrt(rgbArray.size / 3.0).toInt()
-            val height = width
-            
-            Log.d("AudioProcessor", "Creating bitmap with dimensions: ${width}x${height}")
-            
-            if (width <= 0 || height <= 0) {
-                throw IllegalStateException("Invalid bitmap dimensions: ${width}x${height}")
+            // Convert to 8-bit for image encoding (normalize to 0-255)
+            val audioBytes = ByteArray(samples.size)
+            for (i in samples.indices) {
+                // Normalize from -32768..32767 to 0..255
+                audioBytes[i] = ((samples[i].toInt() + 32768) * 255 / 65535).toByte()
             }
 
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            Log.d("AudioProcessor", "Setting bitmap pixels")
-            for (y in 0 until height) {
-                for (x in 0 until width) {
-                    val index = (y * width + x) * 3
-                    if (index + 2 < rgbArray.size) {
-                        val r = rgbArray[index].toInt() and 0xFF
-                        val g = rgbArray[index + 1].toInt() and 0xFF
-                        val b = rgbArray[index + 2].toInt() and 0xFF
-                        bitmap.setPixel(x, y, android.graphics.Color.rgb(r, g, b))
-                    }
+            // Split audio data into three equal parts for RGB channels
+            val totalSamples = audioBytes.size
+            val samplesPerChannel = totalSamples / 3
+            val redChannel = audioBytes.copyOfRange(0, samplesPerChannel)
+            val greenChannel = audioBytes.copyOfRange(samplesPerChannel, samplesPerChannel * 2)
+            val blueChannel = audioBytes.copyOfRange(samplesPerChannel * 2, totalSamples)
+
+            // Calculate image dimensions (square)
+            val side = Math.ceil(Math.sqrt(samplesPerChannel.toDouble())).toInt()
+            val totalPixels = side * side
+
+            // Create bitmap
+            val bitmap = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
+            val pixels = IntArray(totalPixels)
+
+            // Add header in first pixel (total samples)
+            pixels[0] = (totalSamples and 0xFF) or ((totalSamples shr 8) shl 8)
+
+            // Fill pixels with channel data
+            for (i in 0 until totalPixels) {
+                if (i > 0) { // Skip header
+                    val r = if (i < redChannel.size) redChannel[i].toInt() and 0xFF else 0
+                    val g = if (i < greenChannel.size) greenChannel[i].toInt() and 0xFF else 0
+                    val b = if (i < blueChannel.size) blueChannel[i].toInt() and 0xFF else 0
+                    pixels[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
                 }
             }
 
-            // Convert Bitmap to PNG
-            Log.d("AudioProcessor", "Converting bitmap to PNG")
+            bitmap.setPixels(pixels, 0, side, 0, 0, side, side)
+
+            // Convert to PNG
             val outputStream = ByteArrayOutputStream()
-            val success = bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
             bitmap.recycle()
-            
-            if (!success) {
-                throw IllegalStateException("Failed to compress bitmap to PNG")
-            }
 
-            val result = outputStream.toByteArray()
-            Log.d("AudioProcessor", "Successfully encoded audio to image, output size: ${result.size} bytes")
-            result
+            return outputStream.toByteArray()
         } catch (e: Exception) {
             Log.e("AudioProcessor", "Error encoding audio to image", e)
-            Log.e("AudioProcessor", "Error details: ${e.message}")
-            e.printStackTrace()
-            throw e
+            return null
         }
     }
 
-    suspend fun decodeImageToAudio(imageData: ByteArray, method: String): ByteArray = withContext(Dispatchers.Default) {
+    suspend fun decodeImageToAudio(imageData: ByteArray): ByteArray? {
         try {
-            // Decode PNG to Bitmap
+            // Decode image
             val bitmap = BitmapFactory.decodeByteArray(imageData, 0, imageData.size)
-                ?: throw IllegalStateException("Failed to decode image data")
+            if (bitmap == null) return null
 
-            // Extract RGB data from Bitmap
             val width = bitmap.width
             val height = bitmap.height
-            val rgbData = ByteArray(width * height * 3)
+            Log.d("AudioProcessor", "Decoding image: ${width}x${height} pixels")
             
-            for (y in 0 until height) {
-                for (x in 0 until width) {
-                    val pixel = bitmap.getPixel(x, y)
-                    val index = (y * width + x) * 3
-                    rgbData[index] = android.graphics.Color.red(pixel).toByte()
-                    rgbData[index + 1] = android.graphics.Color.green(pixel).toByte()
-                    rgbData[index + 2] = android.graphics.Color.blue(pixel).toByte()
+            val pixels = IntArray(width * height)
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+            Log.d("AudioProcessor", "Total pixels: ${pixels.size}")
+
+            // Read header (total samples)
+            val totalSamples = (pixels[0] and 0xFF) or ((pixels[0] shr 8) and 0xFF shl 8)
+            val samplesPerChannel = totalSamples / 3
+            Log.d("AudioProcessor", "Total samples from header: $totalSamples")
+            Log.d("AudioProcessor", "Samples per channel: $samplesPerChannel")
+
+            // Extract channel data
+            val redChannel = ByteArray(samplesPerChannel)
+            val greenChannel = ByteArray(samplesPerChannel)
+            val blueChannel = ByteArray(samplesPerChannel)
+
+            // Extract RGB channels
+            var redIndex = 0
+            var greenIndex = 0
+            var blueIndex = 0
+
+            // Process each pixel after the header
+            for (i in 1 until pixels.size) {
+                val pixel = pixels[i]
+                if (redIndex < samplesPerChannel) {
+                    redChannel[redIndex++] = ((pixel shr 16) and 0xFF).toByte()
+                }
+                if (greenIndex < samplesPerChannel) {
+                    greenChannel[greenIndex++] = ((pixel shr 8) and 0xFF).toByte()
+                }
+                if (blueIndex < samplesPerChannel) {
+                    blueChannel[blueIndex++] = (pixel and 0xFF).toByte()
                 }
             }
-            bitmap.recycle()
-            
-            // Convert RGB data back to audio based on method
-            val audioData = when (method) {
-                "A" -> decodeMethodA(rgbData)
-                "B" -> decodeMethodB(rgbData)
-                "C" -> decodeMethodC(rgbData)
-                else -> throw IllegalArgumentException("Invalid decoding method")
+
+            Log.d("AudioProcessor", "Channel extraction complete:")
+            Log.d("AudioProcessor", "Red channel samples: $redIndex")
+            Log.d("AudioProcessor", "Green channel samples: $greenIndex")
+            Log.d("AudioProcessor", "Blue channel samples: $blueIndex")
+
+            // Combine channels back into single array
+            val audioBytes = ByteArray(totalSamples)
+            System.arraycopy(redChannel, 0, audioBytes, 0, samplesPerChannel)
+            System.arraycopy(greenChannel, 0, audioBytes, samplesPerChannel, samplesPerChannel)
+            System.arraycopy(blueChannel, 0, audioBytes, samplesPerChannel * 2, samplesPerChannel)
+
+            // Convert back to 16-bit audio
+            val samples = ShortArray(totalSamples)
+            for (i in audioBytes.indices) {
+                // Denormalize from 0-255 back to -32768..32767
+                // Using the exact reverse of the encoding process
+                val normalized = audioBytes[i].toInt() and 0xFF
+                samples[i] = ((normalized * 65535 / 255) - 32768).toShort()
             }
 
-            // Convert to WAV format
+            Log.d("AudioProcessor", "Converted to 16-bit samples: ${samples.size}")
+
+            bitmap.recycle()
+
+            // Create WAV file with proper header
             val outputStream = ByteArrayOutputStream()
-            writeWavHeaderToStream(outputStream, audioData.size)
-            outputStream.write(audioData)
-            outputStream.toByteArray()
+            writeWavHeaderToStream(outputStream, samples.size * 2) // 2 bytes per sample
+            
+            // Write audio data
+            ByteBuffer.allocate(samples.size * 2)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .apply {
+                    samples.forEach { putShort(it) }
+                }
+                .array()
+                .also { outputStream.write(it) }
+
+            val finalAudioData = outputStream.toByteArray()
+            Log.d("AudioProcessor", "Final audio data size: ${finalAudioData.size} bytes")
+            Log.d("AudioProcessor", "Expected duration: ${finalAudioData.size / (SAMPLE_RATE * 2)} seconds")
+
+            return finalAudioData
         } catch (e: Exception) {
             Log.e("AudioProcessor", "Error decoding image to audio", e)
-            throw e
+            e.printStackTrace()
+            return null
         }
     }
 
@@ -433,6 +461,15 @@ class AudioProcessor(private val context: Context) {
                         .build()
                 )
                 setDataSource(tempFile.path)
+                setOnPreparedListener { player ->
+                    Log.d("AudioProcessor", "MediaPlayer prepared successfully")
+                    this@AudioProcessor.duration = player.duration
+                    Log.d("AudioProcessor", "Audio duration: $duration ms")
+                    player.start()
+                    this@AudioProcessor.isPlaying = true
+                    this@AudioProcessor.currentPosition = 0
+                    startPositionUpdates()
+                }
                 setOnCompletionListener { _ ->
                     Log.d("AudioProcessor", "Playback completed")
                     this@AudioProcessor.isPlaying = false
@@ -444,22 +481,10 @@ class AudioProcessor(private val context: Context) {
                     this@AudioProcessor.currentPosition = 0
                     true
                 }
-                prepare()
+                prepareAsync()
             }
             
-            Log.d("AudioProcessor", "MediaPlayer prepared successfully")
-            
-            duration = mediaPlayer?.duration ?: 0
-            Log.d("AudioProcessor", "Audio duration: $duration ms")
-            
-            mediaPlayer?.start()
-            isPlaying = true
-            currentPosition = 0
-            
-            // Start position updates
-            startPositionUpdates()
-            
-            Log.d("AudioProcessor", "Playback started")
+            Log.d("AudioProcessor", "MediaPlayer initialization complete")
             tempFile.delete()
         } catch (e: Exception) {
             Log.e("AudioProcessor", "Error playing audio", e)

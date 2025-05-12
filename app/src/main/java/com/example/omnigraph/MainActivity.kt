@@ -86,7 +86,7 @@ fun OmnigraphApp(
             Log.d("MainActivity", "Selected audio URI: $uri")
             val mimeType = context.contentResolver.getType(uri)
             Log.d("MainActivity", "Audio MIME type: $mimeType")
-            viewModel.processAudioFile(it, context) 
+            viewModel.encodeAudioToImage(it)
         }
     }
     
@@ -97,7 +97,7 @@ fun OmnigraphApp(
             Log.d("MainActivity", "Selected image URI: $uri")
             val mimeType = context.contentResolver.getType(uri)
             Log.d("MainActivity", "Image MIME type: $mimeType")
-            viewModel.processImageFile(it, context) 
+            viewModel.decodeImageToAudio(it)
         }
     }
     
