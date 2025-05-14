@@ -372,10 +372,18 @@ fun PlaybackControls(
     onSeek: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var isDragging by remember { mutableStateOf(false) }
+    var dragProgress by remember { mutableStateOf(progress) }
+
+    LaunchedEffect(progress) {
+        if (!isDragging) {
+            dragProgress = progress
+        }
+    }
+
     LaunchedEffect(isPlaying) {
-        while (isPlaying) {
-            delay(100)
-            onSeek(viewModel.getCurrentProgress())
+        if (!isPlaying) {
+            isDragging = false
         }
     }
 
@@ -394,8 +402,15 @@ fun PlaybackControls(
         }
 
         Slider(
-            value = progress,
-            onValueChange = onSeek,
+            value = dragProgress,
+            onValueChange = { 
+                dragProgress = it
+                isDragging = true
+            },
+            onValueChangeFinished = {
+                isDragging = false
+                onSeek(dragProgress)
+            },
             modifier = Modifier.weight(1f)
         )
     }

@@ -46,9 +46,16 @@ class OmnigraphViewModel : ViewModel() {
             while (true) {
                 if (_state.value.isPlaying) {
                     val progress = audioProcessor?.getCurrentProgress() ?: 0f
-                    _state.value = _state.value.copy(progress = progress)
+                    if (progress >= 1f) {
+                        _state.value = _state.value.copy(
+                            isPlaying = false,
+                            progress = 0f
+                        )
+                    } else {
+                        _state.value = _state.value.copy(progress = progress)
+                    }
                 }
-                delay(100) // Update every 100ms
+                delay(16) // Update at ~60fps for smoother progress
             }
         }
     }
@@ -149,6 +156,7 @@ class OmnigraphViewModel : ViewModel() {
     
     fun seekTo(position: Float) {
         audioProcessor?.seekTo(position)
+        _state.value = _state.value.copy(progress = position)
     }
     
     fun getCurrentProgress(): Float {

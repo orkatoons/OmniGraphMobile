@@ -19,6 +19,9 @@ import java.nio.ByteOrder
 import kotlin.math.ceil
 import kotlin.math.min
 import kotlin.math.sqrt
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 class AudioProcessor(private val context: Context) {
     private var mediaPlayer: MediaPlayer? = null
@@ -26,11 +29,14 @@ class AudioProcessor(private val context: Context) {
     private var currentPosition: Int = 0
     private var duration: Int = 0
     private var progressUpdateJob: kotlinx.coroutines.Job? = null
+    private var lastUpdateTime: Long = 0
+    private var playbackSpeed: Float = 1.0f
     
     companion object {
         private const val SAMPLE_RATE = 44100
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+        private const val UPDATE_INTERVAL = 16L // ~60fps for smoother updates
     }
 
     suspend fun encodeAudioToImage(audioData: ByteArray, method: String): ByteArray = withContext(Dispatchers.Default) {
@@ -178,14 +184,72 @@ class AudioProcessor(private val context: Context) {
     }
 
     private fun decodeMethodA(rgbData: ByteArray): ByteArray {
-        val total = rgbData.size / 3
-        val audioData = ByteArray(total)
-        
-        for (i in 0 until total) {
-            audioData[i] = rgbData[i * 3] // Use red channel
+        try {
+            val total = rgbData.size / 3
+            val side = sqrt(total.toDouble()).toInt()
+            val required = side * side
+            
+            Log.d("AudioProcessor", "Decoding Method A: Total pixels: $total, Side: $side, Required: $required")
+            
+            // Extract each channel
+            val redChannel = ByteArray(required)
+            val greenChannel = ByteArray(required)
+            val blueChannel = ByteArray(required)
+            
+            // Extract RGB channels
+            for (i in 0 until required) {
+                redChannel[i] = rgbData[i * 3]
+                greenChannel[i] = rgbData[i * 3 + 1]
+                blueChannel[i] = rgbData[i * 3 + 2]
+            }
+            
+            // Calculate actual audio size (removing padding)
+            val actualAudioSize = (total * 2) / 3
+            val samplesPerChannel = actualAudioSize / 3
+            
+            Log.d("AudioProcessor", "Decoding Method A: Actual audio size: $actualAudioSize, Samples per channel: $samplesPerChannel")
+            
+            // Reconstruct the audio data
+            val audioData = ByteArray(actualAudioSize)
+            var writeIndex = 0
+            
+            // Write red channel
+            for (i in 0 until samplesPerChannel) {
+                if (i < redChannel.size) {
+                    audioData[writeIndex++] = redChannel[i]
+                }
+            }
+            
+            // Write green channel
+            for (i in 0 until samplesPerChannel) {
+                if (i < greenChannel.size) {
+                    audioData[writeIndex++] = greenChannel[i]
+                }
+            }
+            
+            // Write blue channel
+            for (i in 0 until samplesPerChannel) {
+                if (i < blueChannel.size) {
+                    audioData[writeIndex++] = blueChannel[i]
+                }
+            }
+            
+            // Convert to 16-bit audio
+            val audio16Bit = ByteArray(actualAudioSize * 2)
+            for (i in 0 until actualAudioSize) {
+                val sample = audioData[i].toInt() and 0xFF
+                // Convert to 16-bit with proper scaling
+                val scaledSample = ((sample - 128) * 256).toShort()
+                audio16Bit[i * 2] = (scaledSample.toInt() and 0xFF).toByte()
+                audio16Bit[i * 2 + 1] = (scaledSample.toInt() shr 8).toByte()
+            }
+            
+            Log.d("AudioProcessor", "Decoding Method A: Final audio size: ${audio16Bit.size}")
+            return audio16Bit
+        } catch (e: Exception) {
+            Log.e("AudioProcessor", "Error in decodeMethodA", e)
+            throw e
         }
-        
-        return audioData
     }
 
     private fun decodeMethodB(rgbData: ByteArray): ByteArray {
@@ -215,27 +279,39 @@ class AudioProcessor(private val context: Context) {
             val total = audio8Bit.size
             Log.d("AudioProcessor", "Method A: Processing ${total} bytes")
             
-            val splitPoints = listOf(total / 3, 2 * total / 3)
-            Log.d("AudioProcessor", "Method A: Split points at ${splitPoints[0]} and ${splitPoints[1]}")
-            
-            val red = audio8Bit.copyOfRange(0, splitPoints[0])
-            val green = audio8Bit.copyOfRange(splitPoints[0], splitPoints[1])
-            val blue = audio8Bit.copyOfRange(splitPoints[1], total)
-            
-            val side = ceil(sqrt(red.size.toDouble())).toInt()
+            // Calculate the size needed for a square image
+            val side = ceil(sqrt(total.toDouble())).toInt()
             val required = side * side
             
             Log.d("AudioProcessor", "Method A: Creating ${side}x${side} image")
             
-            val paddedRed = red.copyOf(required)
-            val paddedGreen = green.copyOf(required)
-            val paddedBlue = blue.copyOf(required)
+            // Split audio into three equal parts
+            val partSize = total / 3
+            val red = audio8Bit.copyOfRange(0, partSize)
+            val green = audio8Bit.copyOfRange(partSize, 2 * partSize)
+            val blue = audio8Bit.copyOfRange(2 * partSize, total)
             
-            return ByteArray(side * side * 3).apply {
-                for (i in 0 until side * side) {
-                    this[i * 3] = paddedRed[i]
-                    this[i * 3 + 1] = paddedGreen[i]
-                    this[i * 3 + 2] = paddedBlue[i]
+            // Create the RGB array with proper normalization
+            return ByteArray(required * 3).apply {
+                // Fill each channel with its corresponding audio data
+                for (i in 0 until required) {
+                    // Red channel with proper normalization
+                    this[i * 3] = if (i < red.size) {
+                        val sample = red[i].toInt() and 0xFF
+                        (sample * 255 / 256).toByte()
+                    } else 0
+                    
+                    // Green channel with proper normalization
+                    this[i * 3 + 1] = if (i < green.size) {
+                        val sample = green[i].toInt() and 0xFF
+                        (sample * 255 / 256).toByte()
+                    } else 0
+                    
+                    // Blue channel with proper normalization
+                    this[i * 3 + 2] = if (i < blue.size) {
+                        val sample = blue[i].toInt() and 0xFF
+                        (sample * 255 / 256).toByte()
+                    } else 0
                 }
             }
         } catch (e: Exception) {
@@ -271,9 +347,35 @@ class AudioProcessor(private val context: Context) {
     private fun encodeMethodC(audioShorts: ShortArray): ByteArray {
         try {
             Log.d("AudioProcessor", "Method C: Processing ${audioShorts.size} samples")
-            // For now, just use method A as a fallback
-            val audio8Bit = audioShorts.map { ((it.toFloat() + 32768) / 65535 * 255).toInt().toByte() }.toByteArray()
-            return encodeMethodA(audio8Bit)
+            
+            // Convert 16-bit audio to 8-bit with proper normalization
+            val audio8Bit = audioShorts.map { sample ->
+                // Normalize to prevent clipping
+                val normalizedSample = (sample.toInt() * 127 / 32768).toInt()
+                (normalizedSample + 128).toByte()
+            }.toByteArray()
+            
+            // Calculate the size needed for a square image
+            val total = audio8Bit.size
+            val side = ceil(sqrt(total.toDouble())).toInt()
+            val required = side * side
+            
+            Log.d("AudioProcessor", "Method C: Creating ${side}x${side} image")
+            
+            // Create the RGB array
+            return ByteArray(required * 3).apply {
+                // Store the entire audio data in the red channel with proper normalization
+                for (i in 0 until required) {
+                    // Red channel contains the audio data
+                    this[i * 3] = if (i < audio8Bit.size) {
+                        val sample = audio8Bit[i].toInt() and 0xFF
+                        (sample * 255 / 256).toByte()
+                    } else 0
+                    // Green and blue channels are set to 0
+                    this[i * 3 + 1] = 0
+                    this[i * 3 + 2] = 0
+                }
+            }
         } catch (e: Exception) {
             Log.e("AudioProcessor", "Error in encodeMethodC", e)
             throw e
@@ -437,11 +539,13 @@ class AudioProcessor(private val context: Context) {
                     Log.d("AudioProcessor", "Playback completed")
                     this@AudioProcessor.isPlaying = false
                     this@AudioProcessor.currentPosition = 0
+                    progressUpdateJob?.cancel()
                 }
                 setOnErrorListener { _, what, extra ->
                     Log.e("AudioProcessor", "MediaPlayer error: what=$what, extra=$extra")
                     this@AudioProcessor.isPlaying = false
                     this@AudioProcessor.currentPosition = 0
+                    progressUpdateJob?.cancel()
                     true
                 }
                 prepare()
@@ -455,6 +559,7 @@ class AudioProcessor(private val context: Context) {
             mediaPlayer?.start()
             isPlaying = true
             currentPosition = 0
+            lastUpdateTime = System.currentTimeMillis()
             
             // Start position updates
             startPositionUpdates()
@@ -468,23 +573,40 @@ class AudioProcessor(private val context: Context) {
             isPlaying = false
             currentPosition = 0
             duration = 0
+            progressUpdateJob?.cancel()
         }
     }
     
     private fun startPositionUpdates() {
-        Thread {
-            while (isPlaying) {
+        progressUpdateJob?.cancel()
+        progressUpdateJob = GlobalScope.launch(Dispatchers.Main) {
+            var shouldContinue = true
+            while (isPlaying && shouldContinue) {
                 try {
+                    val currentTime = System.currentTimeMillis()
+                    val deltaTime = currentTime - lastUpdateTime
+                    lastUpdateTime = currentTime
+                    
                     mediaPlayer?.let { player ->
-                        currentPosition = player.currentPosition
+                        if (player.isPlaying) {
+                            currentPosition = player.currentPosition
+                        } else {
+                            // If player is not playing but we think it should be, update position manually
+                            currentPosition = (currentPosition + (deltaTime * playbackSpeed)).toInt()
+                            if (currentPosition >= duration) {
+                                currentPosition = 0
+                                isPlaying = false
+                                shouldContinue = false
+                            }
+                        }
                     }
-                    Thread.sleep(100) // Update every 100ms
+                    delay(UPDATE_INTERVAL)
                 } catch (e: Exception) {
                     Log.e("AudioProcessor", "Error updating position", e)
-                    break
+                    shouldContinue = false
                 }
             }
-        }.start()
+        }
     }
     
     fun pausePlayback() {
@@ -493,6 +615,7 @@ class AudioProcessor(private val context: Context) {
                 player.pause()
                 currentPosition = player.currentPosition
                 isPlaying = false
+                progressUpdateJob?.cancel()
             }
         }
     }
@@ -502,6 +625,8 @@ class AudioProcessor(private val context: Context) {
             if (!isPlaying) {
                 player.start()
                 isPlaying = true
+                lastUpdateTime = System.currentTimeMillis()
+                startPositionUpdates()
             }
         }
     }
@@ -511,6 +636,7 @@ class AudioProcessor(private val context: Context) {
             val newPosition = (position * duration).toInt()
             player.seekTo(newPosition)
             currentPosition = newPosition
+            lastUpdateTime = System.currentTimeMillis()
         }
     }
     
@@ -523,6 +649,7 @@ class AudioProcessor(private val context: Context) {
     }
     
     fun release() {
+        progressUpdateJob?.cancel()
         mediaPlayer?.let { player ->
             player.release()
             mediaPlayer = null
