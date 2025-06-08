@@ -36,6 +36,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.example.omnigraph.ui.theme.LocalDarkMode
+import android.content.Intent
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 
 class GalleryActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -151,11 +154,18 @@ fun MediaItem(
     onMediaClick: () -> Unit
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var showShareDialog by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     Box(
         modifier = Modifier
             .aspectRatio(1f)
             .clickable { onMediaClick() }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onLongPress = { showShareDialog = true }
+                )
+            }
     ) {
         if (file.name.endsWith(".png")) {
             val bitmap = BitmapFactory.decodeFile(file.absolutePath)
@@ -212,6 +222,49 @@ fun MediaItem(
             }
         )
     }
+
+    if (showShareDialog) {
+        AlertDialog(
+            onDismissRequest = { showShareDialog = false },
+            title = { Text("Share Options") },
+            text = { Text("Choose an action") },
+            confirmButton = {
+                Column {
+                    TextButton(
+                        onClick = {
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                context,
+                                "${context.packageName}.fileprovider",
+                                file
+                            )
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = if (file.name.endsWith(".wav")) "audio/wav" else "image/png"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Share via"))
+                            showShareDialog = false
+                        }
+                    ) {
+                        Text("Share")
+                    }
+                    TextButton(
+                        onClick = {
+                            showDeleteDialog = true
+                            showShareDialog = false
+                        }
+                    ) {
+                        Text("Delete")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showShareDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -223,6 +276,7 @@ fun MediaViewer(
     val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf(0f) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
     
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
@@ -259,6 +313,59 @@ fun MediaViewer(
                     }
                 }
             )
+        },
+        bottomBar = {
+            BottomAppBar {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ) {
+                    // Share button
+                    Button(
+                        onClick = {
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                context,
+                                "${context.packageName}.fileprovider",
+                                file
+                            )
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = if (file.name.endsWith(".wav")) "audio/wav" else "image/png"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "Share via"))
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = "Share"
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Share")
+                    }
+                    
+                    Spacer(modifier = Modifier.width(16.dp))
+                    
+                    // Delete button
+                    Button(
+                        onClick = { showDeleteDialog = true },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Delete"
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Delete")
+                    }
+                }
+            }
         }
     ) { paddingValues ->
         Column(
@@ -331,5 +438,30 @@ fun MediaViewer(
             progress = (exoPlayer.currentPosition.toFloat() / exoPlayer.duration.toFloat())
                 .coerceIn(0f, 1f)
         }
+    }
+
+    // Delete confirmation dialog
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("Delete File") },
+            text = { Text("Are you sure you want to delete this file?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        file.delete()
+                        showDeleteDialog = false
+                        onBackClick()
+                    }
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 } 
